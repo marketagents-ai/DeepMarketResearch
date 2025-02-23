@@ -14,9 +14,7 @@ from market_agents.orchestrators.orchestration_data_inserter import Orchestratio
 from market_agents.orchestrators.parallel_cognitive_steps import ParallelCognitiveProcessor
 from market_agents.environments.environment import EnvironmentStep, GlobalAction, LocalEnvironmentStep, StrAction
 from market_agents.environments.mechanisms.web_research import (
-    WebSearchActionInput,
     WebSearchEnvironment,
-    WebSearchAction,
     WebSearchLocalObservation,
     WebSearchMechanism
 )
@@ -172,37 +170,20 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
         
         global_actions = await self._create_global_actions(actions, phase)
         
-        step_result = await self.environment.step(GlobalAction(actions=global_actions))
+        step_result = self.environment.step(GlobalAction(actions=global_actions))
         
         if step_result and step_result.global_observation:
             await self._update_agent_observations(step_result)
         
         return step_result
 
-    async def _create_global_actions(self, actions, phase: str) -> Dict[str, Union[WebSearchAction, ResearchAction, StrAction]]:
+    async def _create_global_actions(self, actions, phase: str) -> Dict[str, Union[ResearchAction, StrAction]]:
         """Create global actions from individual agent actions."""
         global_actions = {}
         
         for agent, action in zip(self.agents, actions or []):
             try:
-                if phase == "search":
-                    if isinstance(action, str) or (action.content and not action.json_object):
-                        content = action if isinstance(action, str) else action.content
-                        global_actions[agent.id] = WebSearchAction(
-                            agent_id=agent.id,
-                            query=content or self.config.initial_query,
-                            num_results=self.config.search_config.get('urls_per_query', 5)
-                        )
-                    elif action.json_object and action.json_object.object:
-                        raw_content = action.json_object.object
-                        if isinstance(raw_content, dict) and 'query' in raw_content:
-                            global_actions[agent.id] = WebSearchAction(
-                                agent_id=agent.id,
-                                query=raw_content['query'],
-                                num_results=self.config.search_config.get('urls_per_query', 5)
-                                #num_results=raw_content.get('num_results', self.config.search_config.get('urls_per_query', 5))
-                            )
-                else:
+                if phase == "summary":
                     if self.summary_model:
                         try:
                             if action and action.json_object and action.json_object.object:
@@ -241,13 +222,7 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
                         
             except Exception as e:
                 self.logger.error(f"Error creating global action for agent {agent.id}: {str(e)}")
-                if phase == "search":
-                    global_actions[agent.id] = WebSearchAction(
-                        agent_id=agent.id,
-                        query=self.config.initial_query,
-                        num_results=self.config.search_config.get('urls_per_query', 5)
-                    )
-                else:
+                if phase == "summary":
                     if self.summary_model:
                         empty_content = self.summary_model.model_construct()
                         global_actions[agent.id] = ResearchAction(
@@ -270,17 +245,12 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
             try:
                 content = None
                 if action:
-                    if isinstance(action, str) or (action.content and not action.json_object):
-                        content = action if isinstance(action, str) else action.content
+                    if isinstance(action, str):
+                        content = action
+                    elif action.content and not action.json_object:
+                        content = action.content
                     elif action.json_object and action.json_object.object:
-                        raw_content = action.json_object.object
-                        if isinstance(raw_content, dict) and 'query' in raw_content:
-                            content = WebSearchActionInput(
-                                query=raw_content.get('query'),
-                                num_results=raw_content.get('num_results', 5)
-                            ).model_dump()
-                        else:
-                            content = raw_content
+                        content = action.json_object.object
 
                 agent.last_action = content
                 if content:

@@ -203,7 +203,6 @@ class ActionStep(CognitiveStep):
         allowed_actions = getattr(action_space, "allowed_actions", [])
         
         if agent.chat_thread:
-            # Handle tools first
             if len(tools) > 1:
                 agent.chat_thread.tools = tools
                 agent.chat_thread.llm_config.response_format = ResponseFormat.workflow
@@ -211,11 +210,14 @@ class ActionStep(CognitiveStep):
             elif len(tools) == 1:
                 agent.chat_thread.tools = tools
                 agent.chat_thread.forced_output = tools[0]
+            elif allowed_actions and isinstance(allowed_actions[0], CallableTool):
+                agent.chat_thread.forced_output = allowed_actions[0]
+                agent.chat_thread.tools = allowed_actions
             elif not allowed_actions or (len(allowed_actions) == 1 and allowed_actions[0] == StrAction):
                 agent.chat_thread.llm_config.response_format = ResponseFormat.text
                 agent.chat_thread.forced_output = None
                 agent.chat_thread.tools = []
-            elif allowed_actions and issubclass(allowed_actions[0], BaseModel):
+            elif allowed_actions and isinstance(allowed_actions[0], type) and issubclass(allowed_actions[0], BaseModel):
                 action_tool = StructuredTool(
                     json_schema=action_space.get_action_schema(),
                     name="react_reasoning",
@@ -223,16 +225,22 @@ class ActionStep(CognitiveStep):
                 )
                 agent.chat_thread.forced_output = action_tool
 
+        serialized_actions = []
+        for action in allowed_actions:
+            if isinstance(action, CallableTool):
+                serialized_actions.append(action.name)
+            elif isinstance(action, type):
+                serialized_actions.append(action.__name__)
+            else:
+                serialized_actions.append(str(action))
+
         variables = MarketAgentPromptVariables(
             environment_name=self.environment_name,
             environment_info=self.environment_info,
             perception=agent.last_perception,
             action_space={
                 "tools": [tool.name for tool in tools] if tools else [],
-                "allowed_actions": [
-                    action_type.__name__
-                    for action_type in allowed_actions
-                ],
+                "allowed_actions": serialized_actions,
                 "constraints": getattr(action_space, "get_constraints", lambda: {})()
             },
             last_action=agent.last_action,
@@ -250,7 +258,9 @@ class ActionStep(CognitiveStep):
         result = await agent.execute()
 
         if isinstance(result, str) and (not allowed_actions or 
-            (len(allowed_actions) == 1 and allowed_actions[0].__name__ == "StrAction")):
+            (len(allowed_actions) == 1 and 
+             (allowed_actions[0] == StrAction or 
+              (isinstance(allowed_actions[0], type) and allowed_actions[0].__name__ == "StrAction")))):
             result = {"agent_id": agent.id, "action": result}
 
         await self.store_memory(
