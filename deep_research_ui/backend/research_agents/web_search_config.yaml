@@ -1,0 +1,65 @@
+query: "Cryptocurrency to invest on"
+max_concurrent_requests: 50
+rate_limit: 0.1
+content_max_length: 4000
+request_timeout: 30
+urls_per_query: 1
+use_ai_summary: true
+methods: 
+  - "selenium"
+  - "playwright"
+  - "beautifulsoup"
+  - "newspaper3k"
+  - "scrapy"
+  - "requests_html"
+  - "mechanicalsoup"
+  - "httpx"
+default_method: "newspaper3k"
+headers:
+  User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+  Accept-Language: "en-US,en;q=0.5"
+
+llm_configs:
+  search_query_generation:
+    client: "openai"
+    model: "gpt-4o"
+    max_tokens: 2048
+    temperature: 0.3
+    response_format: tool
+    use_cache: true
+    system_prompt: |
+      You are an expert market research analyst specializing in cryptocurrency and trading.
+      Generate precise, targeted search queries that will yield current market information and investment opportunities.
+    prompt_template: |
+      Generate search queries based on this general query:
+
+      Time Context:
+      - Current Year: {current_year}
+      - Current Month: {current_month}
+      
+      Base Query: {query}
+      
+      Please generate TWO search queries that:
+      1. Include specific time frames (e.g., "{current_year} Q1", "{current_month} {current_year}", "last 30 days")
+      2. Focus on recent developments and trends
+      3. Include terms like "latest", "recent", "current", "upcoming"
+      4. Consider both immediate news and short-term historical context
+
+      Return the response in the following JSON format:
+
+  content_analysis:
+    client: "openai"
+    model: "gpt-4o"
+    max_tokens: 2048
+    temperature: 0.5
+    response_format: json_object
+    use_cache: true
+    system_prompt: "You are an expert financial & Trading analyst."
+    prompt_template: "{prompt}"
+    schema_config:
+      schema_name: "MarketResearch"  # pydantic class from research_schemas.py for json output
+      schema_description: "Generate comprehensive market research analysis covering asset-specific, sector-wide, or macro-level insights with actionable recommendations"
+      instruction_string: "Analyze the content and provide detailed market research following this schema:"
+
+tools_storage_path: "market_agents/research_agent_with_ui/storage/custom_tools.json"

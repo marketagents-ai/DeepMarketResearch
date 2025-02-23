@@ -1,0 +1,33 @@
+/* Essential scrollbar styles */
+.logs-container::-webkit-scrollbar {
+    width: 10px;
+  }
+  
+  .logs-container::-webkit-scrollbar-track {
+    background: #1a1b1e;
+    border-radius: 4px;
+  }
+  
+  .logs-container::-webkit-scrollbar-thumb {
+    background: #63e2ff;
+    border-radius: 4px;
+    border: 2px solid #1a1b1e;
+  }
+  
+  .logs-container::-webkit-scrollbar-thumb:hover {
+    background: #63e2ffaa;
+  }
+  
+  .logs-container {
+    scrollbar-width: thin;
+    scrollbar-color: #63e2ff #1a1b1e;
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Touch device support */
+  @media (pointer: coarse) {
+    .logs-container {
+      -webkit-overflow-scrolling: touch;
+      scroll-behavior: smooth;
+    }
+  }

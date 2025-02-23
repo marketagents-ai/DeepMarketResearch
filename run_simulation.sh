@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to run market simulation with parallel orchestration, dashboard, and time tracking
-python polaimarket/agent_evm_testnet/setup_testnet.py
+
 # Function to check if a port is in use
 check_port() {
     local port=$1
