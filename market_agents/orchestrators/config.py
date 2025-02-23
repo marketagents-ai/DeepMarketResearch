@@ -227,6 +227,4 @@ def load_config(config_path: Path, overrides: dict = None) -> OrchestratorConfig
     try:
         return OrchestratorConfig(**config_dict)
     except Exception as e:
-        logging.error(f"Failed to create config with overrides: {e}")
-        logging.debug(f"Config dict after overrides: {config_dict}")
         raise
