@@ -4,8 +4,8 @@ num_agents: 2
 max_rounds: 1
 environment_order:
   - web_research
-  - group_chat
-  - research
+#  - group_chat
+#  - research
 tool_mode: true
 agent_config:
   knowledge_base: "hamlet_kb"
@@ -24,7 +24,7 @@ llm_configs:
 #      temperature: 0.5
 #      use_cache: true
 #    - name: "hermes"
-#      model: "openai/NousResearch/Hermes-3-Llama-3.1-8B"
+#      model: "openai/NousResearch/DeepHermes-3-Llama-3-8B-Preview"
 #      client: "litellm"
 #      max_tokens: 4096
 #      temperature: 0.5
