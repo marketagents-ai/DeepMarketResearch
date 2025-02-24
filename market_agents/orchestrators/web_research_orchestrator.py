@@ -119,20 +119,15 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
         """Executes a single sub-round with both search and summary phases"""
         try:
             # 1. Perception Phase
-            perceptions = await self._run_perception_phase(round_num, sub_round)
+            #perceptions = await self._run_perception_phase(round_num, sub_round)
             
             # 2. Search Phase
-            self.environment.switch_phase("search")
-            search_result = await self._run_action_phase(round_num, sub_round, "search")
-            
-            # 3. Summary Phase
-            self.environment.switch_phase("summary")
-            summary_result = await self._run_action_phase(round_num, sub_round, "summary")
+            result = await self._run_action_phase(round_num, sub_round)
             
             # 4. Reflection Phase
-            reflections = await self._run_reflection_phase(round_num, sub_round)
+            #reflections = await self._run_reflection_phase(round_num, sub_round)
             
-            return summary_result
+            return result
             
         except Exception as e:
             self.logger.error(f"Error in sub-round {sub_round} of round {round_num}: {e}")
@@ -156,9 +151,9 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
         
         return perceptions
 
-    async def _run_action_phase(self, round_num: int, sub_round: int, phase: str):
-        """Handles the action phase of the cognitive cycle for either search or summary."""
-        self.logger.info(f"Round {round_num}.{sub_round}: Executing agent {phase}...")
+    async def _run_action_phase(self, round_num: int, sub_round: int):
+        """Handles the action phase of the cognitive cycle."""
+        self.logger.info(f"Round {round_num}.{sub_round}: Executing agent actions...")
         
         actions = await self.cognitive_processor.run_parallel_action(
             self.agents,
@@ -166,9 +161,9 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
         )
         
         agent_results = await self._process_agent_actions(actions)
-        self.logger.info(f"Processed {phase} results: {agent_results}")
+        self.logger.info(f"Processed action results: {agent_results}")
         
-        global_actions = await self._create_global_actions(actions, phase)
+        global_actions = await self._create_global_actions(actions)
         
         step_result = self.environment.step(GlobalAction(actions=global_actions))
         
@@ -177,52 +172,45 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
         
         return step_result
 
-    async def _create_global_actions(self, actions, phase: str) -> Dict[str, Union[ResearchAction, StrAction]]:
+    async def _create_global_actions(self, actions) -> Dict[str, Union[ResearchAction, StrAction]]:
         """Create global actions from individual agent actions."""
         global_actions = {}
         
         for agent, action in zip(self.agents, actions or []):
             try:
-                if phase == "summary":
+                if action and action.json_object and action.json_object.object:
+                    content = action.json_object.object
                     if self.summary_model:
                         try:
-                            if action and action.json_object and action.json_object.object:
-                                content = action.json_object.object
-                                validated_content = self.summary_model.model_validate(content)
-                                global_actions[agent.id] = ResearchAction(
-                                    agent_id=agent.id,
-                                    action=validated_content
-                                )
-                            else:
-                                empty_content = self.summary_model.model_construct()
-                                global_actions[agent.id] = ResearchAction(
-                                    agent_id=agent.id,
-                                    action=empty_content
-                                )
+                            validated_content = self.summary_model.model_validate(content)
+                            global_actions[agent.id] = ResearchAction(
+                                agent_id=agent.id,
+                                action=validated_content
+                            )
                         except Exception as e:
-                            self.logger.error(f"Error creating ResearchAction: {e}")
+                            self.logger.error(f"Error validating content with summary model: {e}")
                             empty_content = self.summary_model.model_construct()
                             global_actions[agent.id] = ResearchAction(
                                 agent_id=agent.id,
                                 action=empty_content
                             )
                     else:
-                        content = ""
-                        if action and action.content:
-                            content = action.content
-                        elif action and action.json_object and action.json_object.object:
-                            content = str(action.json_object.object)
-                        elif isinstance(action, str):
-                            content = action
-                        
                         global_actions[agent.id] = StrAction(
                             agent_id=agent.id,
-                            action=content
+                            action=str(content)
                         )
-                        
-            except Exception as e:
-                self.logger.error(f"Error creating global action for agent {agent.id}: {str(e)}")
-                if phase == "summary":
+                elif action and action.content:
+                    global_actions[agent.id] = StrAction(
+                        agent_id=agent.id,
+                        action=action.content
+                    )
+                elif isinstance(action, str):
+                    global_actions[agent.id] = StrAction(
+                        agent_id=agent.id,
+                        action=action
+                    )
+                else:
+                    # Handle empty or invalid action
                     if self.summary_model:
                         empty_content = self.summary_model.model_construct()
                         global_actions[agent.id] = ResearchAction(
@@ -234,6 +222,20 @@ class WebResearchOrchestrator(BaseEnvironmentOrchestrator):
                             agent_id=agent.id,
                             action=""
                         )
+                        
+            except Exception as e:
+                self.logger.error(f"Error creating global action for agent {agent.id}: {str(e)}")
+                if self.summary_model:
+                    empty_content = self.summary_model.model_construct()
+                    global_actions[agent.id] = ResearchAction(
+                        agent_id=agent.id,
+                        action=empty_content
+                    )
+                else:
+                    global_actions[agent.id] = StrAction(
+                        agent_id=agent.id,
+                        action=""
+                    )
         
         return global_actions
 
