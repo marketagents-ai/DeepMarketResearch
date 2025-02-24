@@ -246,6 +246,7 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         if chat_thread.workflow_step is None:
             raise ValueError("Workflow step is None")
         EntityRegistry._logger.info(f"Detected workflow mode for ChatThread({chat_thread.id}) with workflow step {chat_thread.workflow_step}")
+        print(f"Detected workflow mode for ChatThread({chat_thread.id}) with workflow step {chat_thread.workflow_step}")
         if chat_thread.workflow_step >= len(chat_thread.tools):
             raise ValueError(f"Workflow step {chat_thread.workflow_step} is out of range for tools: {chat_thread.tools}")
         tool = chat_thread.tools[chat_thread.workflow_step]
@@ -253,6 +254,8 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
             request["tools"] = [tool.get_openai_tool()]
             request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
             EntityRegistry._logger.info(f"Added tool({tool.name}) to OpenAI request as workflow step {chat_thread.workflow_step}")
+            print(f"Added tool({tool.name}) to OpenAI request as workflow step {chat_thread.workflow_step}")
+
             chat_thread.workflow_step += 1
         else:
             EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
