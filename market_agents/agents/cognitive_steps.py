@@ -179,10 +179,6 @@ class PerceptionStep(CognitiveStep):
         return result
 
 class ActionStep(CognitiveStep):
-    """
-    Decides the agent's next action using zero or more tools,
-    then applies it in the environment.
-    """
     step_name: str = "action"
     action_space: Optional[
         Union[
@@ -199,24 +195,40 @@ class ActionStep(CognitiveStep):
     async def execute(self, agent: BaseModel) -> Union[str, Dict[str, Any]]:
         environment = agent.environments[self.environment_name]
         action_space = environment.action_space if environment else None
+
+        print(f"ActionSpace type: {type(action_space)}")
+        print(f"ActionSpace has workflow attr: {hasattr(action_space, 'workflow')}")
+        if hasattr(action_space, 'workflow'):
+            print(f"ActionSpace workflow value: {action_space.workflow}")
+
         tools = getattr(action_space, "tools", [])
         allowed_actions = getattr(action_space, "allowed_actions", [])
-        
+    
         if agent.chat_thread:
-            if len(tools) > 1:
-                agent.chat_thread.tools = tools
+            print(f"Chat thread before setup: format={agent.chat_thread.llm_config.response_format}, tools={[t.name for t in agent.chat_thread.tools if t]}")
+            
+            # Check action space's workflow flag
+            if hasattr(action_space, "workflow") and action_space.workflow:
+                print("Setting up workflow mode")
+                agent.chat_thread.tools = tools or allowed_actions
+                print(f"#tools: {len(allowed_actions)}")
                 agent.chat_thread.llm_config.response_format = ResponseFormat.workflow
-                agent.chat_thread.workflow_step = 0
+                if agent.chat_thread.workflow_step is None:
+                    agent.chat_thread.workflow_step = 0
+                print(f"Chat thread after setup: format={agent.chat_thread.llm_config.response_format}, workflow_step={agent.chat_thread.workflow_step}, tools={[t.name for t in agent.chat_thread.tools if t]}")
+            # Single tool mode
             elif len(tools) == 1:
                 agent.chat_thread.tools = tools
                 agent.chat_thread.forced_output = tools[0]
             elif allowed_actions and isinstance(allowed_actions[0], CallableTool):
                 agent.chat_thread.forced_output = allowed_actions[0]
                 agent.chat_thread.tools = allowed_actions
+            # String action mode
             elif not allowed_actions or (len(allowed_actions) == 1 and allowed_actions[0] == StrAction):
                 agent.chat_thread.llm_config.response_format = ResponseFormat.text
                 agent.chat_thread.forced_output = None
                 agent.chat_thread.tools = []
+            # Structured output mode
             elif allowed_actions and isinstance(allowed_actions[0], type) and issubclass(allowed_actions[0], BaseModel):
                 action_tool = StructuredTool(
                     json_schema=action_space.get_action_schema(),

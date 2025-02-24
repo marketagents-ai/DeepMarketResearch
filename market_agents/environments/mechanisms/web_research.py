@@ -20,7 +20,7 @@ from market_agents.environments.environment import (
     ObservationSpace,
     StrAction
 )
-from minference.lite.models import CallableTool
+from minference.lite.models import CallableTool, StructuredTool
 from minference.caregistry import CallableRegistry
 
 from market_agents.web_search.web_search_manager import SearchManager
@@ -66,7 +66,6 @@ class WebSearchMechanism(Mechanism):
         description="History of search results"
     )
     current_query: str = ""
-    web_search_tool: Optional[CallableTool] = None
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -82,13 +81,6 @@ class WebSearchMechanism(Mechanism):
         self.search_manager = SearchManager(config=self.search_config)
         self.content_extractor = ContentExtractor(config=self.search_config)
         self.url_fetcher = URLFetcher(config=self.search_config, prompts={})
-        
-        self.web_search_tool = CallableTool.from_callable(
-            func=self.execute_web_search,
-            name="web_search",
-            docstring="Execute web search and return results",
-            strict_schema=True
-        )
     
     def step(
         self,
@@ -140,40 +132,6 @@ class WebSearchMechanism(Mechanism):
             info={"round": self.current_round}
         )
 
-    async def execute_web_search(
-        self,
-        query: str,
-        num_results: Optional[int] = None
-    ) -> List[WebSearchResult]:
-        """Execute web search and return results"""
-        try:
-            self.current_query = query
-            
-            urls = await self.search_manager.get_urls_for_query(
-                query,
-                self.search_config.urls_per_query)
-            
-            for url in urls:
-                self.search_manager.query_url_mapping[url] = query
-            
-            fetched_results = await self.url_fetcher.process_urls(urls, self.search_manager.query_url_mapping)
-            
-            search_results = [
-                {
-                    "url": fr.url,
-                    "title": fr.title,
-                    "content": fr.content.get('text', ''),
-                    "timestamp": datetime.now().isoformat()
-                }
-                for fr in fetched_results if fr is not None
-            ]
-            
-            return search_results
-                
-        except Exception as e:
-            logger.error(f"Error in web search: {str(e)}")
-            return []
-
     def get_global_state(self) -> Dict[str, Any]:
         """Get current global state"""
         return {
@@ -191,41 +149,96 @@ class WebSearchMechanism(Mechanism):
 
 class WebResearchActionSpace(ActionSpace):
     """Action space that handles both web search and research summary actions"""
-    allowed_actions: List[Union[Type[LocalAction], CallableTool]] = Field(default_factory=list)
     summary_model: Optional[Type[BaseModel]] = None
-    current_phase: str = "search"
     mechanism: WebSearchMechanism = Field(
-        ...,
+        ..., 
         description="Mechanism that handles web search operations"
     )
+    workflow: bool = Field(
+        default=True,
+        description="Whether tools should be executed sequentially as a workflow"
+    )
 
-    def __init__(self, mechanism: WebSearchMechanism, summary_model: Type[BaseModel] = None, **data):
-        data["mechanism"] = mechanism
+    def __init__(self, mechanism: WebSearchMechanism, summary_model: Type[BaseModel] = None, workflow:bool = True, **data):
+        data.update({
+            "mechanism": mechanism,
+            "workflow": workflow
+        })
         super().__init__(**data)
+
+        print(f"WebResearchActionSpace initialized with workflow={workflow}")  # Debug
         
         self.summary_model = summary_model
-        self.set_phase("search")
-
-    def set_phase(self, phase: str):
-        """Switch between search and summary phases"""
-        if phase not in ["search", "summary"]:
-            raise ValueError(f"Invalid phase: {phase}")
-            
-        self.current_phase = phase
-        if phase == "search":
-            self.allowed_actions = [self.mechanism.web_search_tool]
-        elif phase == "summary":
-            self.allowed_actions = [ResearchAction] if self.summary_model else [StrAction]
-
-    def get_action_schema(self) -> Dict[str, Any]:
-        """Return JSON schema based on current phase"""
-        if self.current_phase == "search":
-            return self.mechanism.web_search_tool.json_schema()
-        elif self.summary_model:
-            return self.summary_model.model_json_schema()
+        
+        # Create web search tool
+        web_search_tool = CallableTool.from_callable(
+            func=self.execute_web_search,
+            name="web_search",
+            docstring="Execute web search and return results",
+            strict_schema=True
+        )
+        
+        # Create summary tool based on model or string action
+        if summary_model:
+            summary_tool = StructuredTool(
+                json_schema=summary_model.model_json_schema(),
+                name="research_summary",
+                description="Generate research summary from search results"
+            )
         else:
-            return {"type": "string"}
+            summary_tool = StructuredTool(
+                json_schema=StrAction.model_json_schema(),
+                name="text_summary",
+                description="Generate text summary from search results"
+            )
 
+        # Both tools defined in action space
+        self.allowed_actions = [
+            web_search_tool,
+            summary_tool
+        ]
+
+    async def execute_web_search(
+        self,
+        query: str,
+        num_results: Optional[int] = None
+    ) -> List[WebSearchResult]:
+        """Execute web search and return results"""
+        try:
+            self.mechanism.current_query = query
+            
+            urls = await self.mechanism.search_manager.get_urls_for_query(
+                query,
+                self.mechanism.search_config.urls_per_query)
+            
+            for url in urls:
+                self.mechanism.search_manager.query_url_mapping[url] = query
+            
+            fetched_results = await self.mechanism.url_fetcher.process_urls(urls, self.mechanism.search_manager.query_url_mapping)
+            
+            search_results = [
+                {
+                    "url": fr.url,
+                    "title": fr.title,
+                    "content": fr.content.get('text', ''),
+                    "timestamp": datetime.now().isoformat()
+                }
+                for fr in fetched_results if fr is not None
+            ]
+            
+            return search_results
+                
+        except Exception as e:
+            logger.error(f"Error in web search: {str(e)}")
+            return []
+        
+    def get_action_schema(self) -> Dict[str, Any]:
+        """Return JSON schema for both tools"""
+        return {
+            tool.name: tool.json_schema() 
+            for tool in self.allowed_actions
+        }
+    
 class WebSearchEnvironment(MultiAgentEnvironment):
     """Environment that manages web search operations"""
     name: str = Field(
@@ -237,10 +250,7 @@ class WebSearchEnvironment(MultiAgentEnvironment):
         description="Mechanism that handles web search operations"
     )
     action_space: WebResearchActionSpace = None
-    current_phase: str = Field(
-        default="search",
-        description="Current action phase (search/summary)"
-    )
+
     internal_state: Dict[str, Any] = Field(
         default_factory=dict,
         description="Internal storage for global state"
@@ -277,21 +287,14 @@ class WebSearchEnvironment(MultiAgentEnvironment):
         
         self.action_space = WebResearchActionSpace(
             mechanism=self.mechanism,
-            summary_model=summary_model
+            summary_model=summary_model,
+            workflow=True
         )
         
         self.internal_state = {}
         
         if hasattr(self.mechanism, 'current_query'):
             self.mechanism.current_query = initial_query
-
-    def switch_phase(self, phase: str):
-        """Switch between search and summary phases"""
-        if phase not in ["search", "summary"]:
-            raise ValueError(f"Invalid phase: {phase}")
-            
-        self.current_phase = phase
-        self.action_space.set_phase(phase)
 
     def get_global_state(self) -> Dict[str, Any]:
         """Get current global state combining mechanism and environment state"""
@@ -307,7 +310,6 @@ class WebSearchEnvironment(MultiAgentEnvironment):
         return {
             **self.internal_state,
             **mechanism_state,
-            "current_phase": self.current_phase,
             "initial_query": self.initial_query,
             "summary_model": self.summary_model.__name__ if self.summary_model else None,
             "summary_schema": summary_schema
@@ -316,7 +318,6 @@ class WebSearchEnvironment(MultiAgentEnvironment):
     def reset(self) -> GlobalObservation:
         """Reset environment state and restore initial query"""
         self.internal_state = {}
-        self.current_phase = "search"
         if hasattr(self.mechanism, 'current_query'):
             self.mechanism.current_query = self.initial_query
         self.mechanism.reset()
