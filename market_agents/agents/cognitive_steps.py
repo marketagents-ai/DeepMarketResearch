@@ -213,8 +213,7 @@ class ActionStep(CognitiveStep):
                 agent.chat_thread.tools = tools or allowed_actions
                 print(f"#tools: {len(allowed_actions)}")
                 agent.chat_thread.llm_config.response_format = ResponseFormat.workflow
-                if agent.chat_thread.workflow_step is None:
-                    agent.chat_thread.workflow_step = 0
+                agent.chat_thread.workflow_step = 0
                 print(f"Chat thread after setup: format={agent.chat_thread.llm_config.response_format}, workflow_step={agent.chat_thread.workflow_step}, tools={[t.name for t in agent.chat_thread.tools if t]}")
             # Single tool mode
             elif len(tools) == 1:
