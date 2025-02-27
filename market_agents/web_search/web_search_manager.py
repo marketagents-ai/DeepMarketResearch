@@ -10,11 +10,12 @@ from fake_useragent import UserAgent
 logger = logging.getLogger(__name__)
 
 class SearchManager:
-    # Global rate limiting parameters
+    # Global rate limiting parameters with more parallel capacit
     _last_request_time = 0
     _request_lock = asyncio.Lock()
-    _min_delay = 15.0  # Increased delay to 15 seconds for more headroom
-    _semaphore = asyncio.Semaphore(1)  # Only one active search at a time
+    _min_delay = 5.0
+    _semaphore = asyncio.Semaphore(3)
+    _url_cache = {}
 
     def __init__(self, config, worker_count: int = 1):
         self.config = config
@@ -22,9 +23,7 @@ class SearchManager:
         self.headers = config.headers.to_dict() if hasattr(config, 'headers') else {}
         self.query_url_mapping = {}
         self.user_agent = UserAgent()
-        # Centralized queue for search requests from all agents
         self._queue: asyncio.Queue[Tuple[str, int, asyncio.Future]] = asyncio.Queue()
-        # Create worker(s) to process the queued searches sequentially
         self._workers = [asyncio.create_task(self._worker()) for _ in range(worker_count)]
 
     async def _worker(self):
@@ -40,26 +39,29 @@ class SearchManager:
 
     async def _execute_search(self, query: str, num_results: int) -> List[str]:
         sanitized_query = quote_plus(query)
-        async with self._semaphore:  # Ensure one search request at a time
+        cache_key = f"{sanitized_query}:{num_results}"
+        
+        if cache_key in self._url_cache:
+            logger.info(f"Cache hit for query: {query[:50]}...")
+            return self._url_cache[cache_key]
+            
+        async with self._semaphore:
             for attempt in range(self.max_retries):
                 try:
                     async with self._request_lock:
                         now = time.time()
                         delay = self._min_delay - (now - self._last_request_time)
                         if delay > 0:
-                            # Extra jitter to avoid predictable timing
-                            jitter = random.uniform(1.0, 2.0)
+                            jitter = random.uniform(0.5, 1.0)
                             total_delay = delay + jitter
                             logger.info(f"Rate limiting: waiting {total_delay:.2f}s for query: {query[:50]}...")
                             await asyncio.sleep(total_delay)
-                        # Rotate user agent for each request
                         self.headers['User-Agent'] = self.user_agent.random
-                        # Execute the search with a longer sleep_interval between internal calls
                         urls = list(search(
                             term=sanitized_query,
                             num_results=num_results,
                             lang="en",
-                            sleep_interval=5,
+                            sleep_interval=2,
                             timeout=30,
                             safe="active",
                             unique=True
@@ -69,6 +71,7 @@ class SearchManager:
                         logger.info(f"Search successful for query: {query[:50]}... Found {len(urls)} URLs")
                         for url in urls:
                             self.query_url_mapping[url] = query
+                        self._url_cache[cache_key] = urls
                         return urls
                 except Exception as e:
                     logger.error(f"Search attempt {attempt+1}/{self.max_retries} failed for query: {query[:50]}... {str(e)}")
@@ -89,4 +92,6 @@ class SearchManager:
         return await future
 
     def reset(self):
+        """Reset all internal state including caches."""
         self.query_url_mapping.clear()
+        self._url_cache.clear()
