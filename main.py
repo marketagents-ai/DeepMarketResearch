@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from market_agents.orchestrators.mcp_orchestrator import MCPOrchestrator
 from market_agents.orchestrators.web_research_orchestrator import WebResearchOrchestrator
 from market_agents.agents.market_agent import MarketAgent
 from market_agents.agents.personas.persona import load_or_generate_personas
@@ -188,6 +189,7 @@ async def main():
         "group_chat": GroupChatOrchestrator,
         "research": ResearchOrchestrator,
         "web_research": WebResearchOrchestrator,
+        "mcp_server": MCPOrchestrator
     }
 
     meta_orch = MetaOrchestrator(

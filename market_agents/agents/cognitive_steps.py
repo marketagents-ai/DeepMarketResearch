@@ -197,6 +197,13 @@ class ActionStep(CognitiveStep):
         action_space = environment.action_space if environment else None
 
         print(f"ActionSpace type: {type(action_space)}")
+            # Debug: Print available tools
+        if hasattr(environment, 'action_space') and hasattr(environment.action_space, 'allowed_actions'):
+            print(f"ActionStep: Found {len(environment.action_space.allowed_actions)} tools in action_space")
+            for tool in environment.action_space.allowed_actions:
+                print(f"  - Tool: {tool.name}")
+        else:
+            print("ActionStep: No tools found in action_space")
         print(f"ActionSpace has workflow attr: {hasattr(action_space, 'workflow')}")
         if hasattr(action_space, 'workflow'):
             print(f"ActionSpace workflow value: {action_space.workflow}")
@@ -215,6 +222,11 @@ class ActionStep(CognitiveStep):
                 agent.chat_thread.llm_config.response_format = ResponseFormat.workflow
                 agent.chat_thread.workflow_step = 0
                 print(f"Chat thread after setup: format={agent.chat_thread.llm_config.response_format}, workflow_step={agent.chat_thread.workflow_step}, tools={[t.name for t in agent.chat_thread.tools if t]}")
+            elif len(allowed_actions) > 1:
+                print(f"Setting up multiple tools mode with {len(allowed_actions)} tools")
+                agent.chat_thread.tools = tools or allowed_actions
+                agent.chat_thread.llm_config.response_format = ResponseFormat.auto_tools
+                print(f"Chat thread after setup: format={agent.chat_thread.llm_config.response_format}, tools={[t.name for t in agent.chat_thread.tools if t]}")
             # Single tool mode
             elif len(tools) == 1:
                 agent.chat_thread.tools = tools

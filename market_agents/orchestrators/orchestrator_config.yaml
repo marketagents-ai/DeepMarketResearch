@@ -3,9 +3,10 @@
 num_agents: 2
 max_rounds: 1
 environment_order:
-  - web_research
+#  - web_research
 #  - group_chat
 #  - research
+  - mcp_server
 tool_mode: true
 agent_config:
   knowledge_base: "hamlet_kb"
@@ -70,14 +71,14 @@ environment_configs:
     name: "web_research"
     api_url: "http://localhost:8005"
     initial_query: "What will be the Fed's rate decision in March 2024 FOMC meeting?"
-    sub_rounds: 1
+    sub_rounds: 2
     schema_model: "FedRateAnalysis"
     search_config:
       max_concurrent_requests: 50
       rate_limit: 0.1
       content_max_length: 4000
       request_timeout: 30
-      urls_per_query: 2
+      urls_per_query: 4
       use_ai_summary: true
       methods: 
         - "selenium"
@@ -93,6 +94,15 @@ environment_configs:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
         Accept-Language: "en-US,en;q=0.5"
+  
+  mcp_server:
+    name: "mcp_finance"
+    mcp_server_module: "market_agents.orchestrators.mcp_server.finance_mcp_server"
+    mcp_server_class: "mcp"
+    api_url: "local://mcp_server"
+    max_rounds: 3
+    sub_rounds: 2
+    initial_prompt: "Analyze the current market conditions for NVIDIA stocks. What are their current prices, recent performance, and key financial metrics?"
 
 protocol: "acl_message"
 database_config:

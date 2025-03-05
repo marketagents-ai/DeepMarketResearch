@@ -286,18 +286,41 @@ def derive_input_schema(func: Callable) -> SchemaType:
 
 def derive_output_schema(func: Callable) -> SchemaType:
     """Derive output JSON schema from function return type."""
-    type_hints = get_type_hints(func)
-    
-    if 'return' not in type_hints:
-        raise ValueError(f"Function {func.__name__} must have a return type hint")
-    
-    output_type = type_hints['return']
-    if isinstance(output_type, type) and issubclass(output_type, BaseModel):
-        OutputModel = output_type
-    else:
-        OutputModel = create_model(f"{func.__name__}Output", result=(output_type, ...))
-    
-    return OutputModel.model_json_schema()
+    try:
+        type_hints = get_type_hints(func)
+        
+        if 'return' not in type_hints:
+            # Create a default schema for dict return type when no return hint is present
+            return {
+                "title": f"{func.__name__}Output",
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "object",
+                        "description": "Result from function execution"
+                    }
+                }
+            }
+        
+        output_type = type_hints['return']
+        if isinstance(output_type, type) and issubclass(output_type, BaseModel):
+            OutputModel = output_type
+        else:
+            OutputModel = create_model(f"{func.__name__}Output", result=(output_type, ...))
+        
+        return OutputModel.model_json_schema()
+    except Exception as e:
+        # Fallback schema in case of any errors
+        return {
+            "title": f"{func.__name__}Output",
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "description": "Result from function execution"
+                }
+            }
+        }
 
 def validate_schema_compatibility(
     derived_schema: SchemaType,

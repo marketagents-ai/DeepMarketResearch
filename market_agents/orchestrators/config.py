@@ -90,6 +90,41 @@ class WebResearchConfig(BaseModel):
         description="Name of Pydantic model defining research output schema"
     )
 
+class MCPServerConfig(EnvironmentConfig):
+    """Configuration for MCP Server environment"""
+    name: str = Field(
+        ..., 
+        description="Name of the MCP server environment"
+    )
+    mcp_server_module: str = Field(
+        ..., 
+        description="Module path to the MCP server"
+    )
+    mcp_server_class: str = Field(
+        default="mcp", 
+        description="Variable name of the MCP server instance"
+    )
+    max_rounds: int = Field(
+        default=3,
+        description="Maximum number of rounds for the MCP server"
+    )
+    sub_rounds: int = Field(
+        default=2, 
+        description="Number of sub-rounds per main round"
+    )
+    initial_prompt: str = Field(
+        default="", 
+        description="Initial prompt for the MCP server interaction"
+    )
+    api_url: str = Field(
+        default="local://mcp_server",
+        description="Placeholder API endpoint for MCP server (not used)"
+    )
+    
+    model_config = {
+        "extra": "allow"
+    }
+
 class LLMConfigModel(BaseModel):
     name: str = Field(
         ...,

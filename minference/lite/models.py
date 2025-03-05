@@ -525,6 +525,41 @@ class CallableTool(Entity):
                     input_schema=self.input_schema,
             )
         return None
+
+class CallableMCPTool(CallableTool):
+    """
+    A callable tool intended for MCP server execution.
+    
+    This tool includes a flag indicating it should be executed via the MCP server,
+    and holds a reference to the MCP server instance. Its asynchronous execution method
+    delegates the call to the MCP server's call_tool interface.
+    """
+    mcp_mode: bool = Field(default=True, description="Indicates tool execution via MCP server")
+    mcp_server: Optional[Any] = Field(default=None, description="Reference to the MCP server instance")
+
+    async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Asynchronously execute the tool via the MCP server.
+        
+        Args:
+            input_data (Dict[str, Any]): Input arguments for the tool.
+            
+        Returns:
+            Dict[str, Any]: Result returned by the MCP server.
+        
+        Raises:
+            ValueError: If the mcp_server instance is not set.
+            Exception: Propagates errors from the MCP server execution.
+        """
+        if not self.mcp_server:
+            raise ValueError(f"CallableMCPTool({self.name}): MCP server instance is not set.")
+        try:
+            # Delegate execution to the MCP server's async call_tool method.
+            result = await self.mcp_server.call_tool(self.name, arguments=input_data)
+            return result
+        except Exception as e:
+            CallableRegistry._logger.error(f"CallableMCPTool({self.name}): Async execution failed: {e}")
+            raise
         
 class StructuredTool(Entity):
     """
@@ -1494,6 +1529,24 @@ class ChatThread(Entity):
                         )
                         self.history.append(tool_message)
                         EntityRegistry._logger.info(f"Added tool validation message({tool_message.id}) with tool_call_id: {tool_message.oai_tool_call_id}")
+                    elif isinstance(tool, CallableMCPTool):
+                        # Handle MCP tool execution
+                        EntityRegistry._logger.info(f"Executing MCP tool: {tool.name} with args: {output.json_object.object}")
+                        tool_result = await tool.aexecute(input_data=output.json_object.object)
+                        EntityRegistry._logger.info(f"MCP tool result: {tool_result}")
+                        
+                        tool_message = ChatMessage(
+                            role=MessageRole.tool,
+                            content=json.dumps(tool_result),
+                            chat_thread_uuid=self.id,
+                            tool_name=tool.name,
+                            tool_uuid=tool.id,
+                            tool_type="CallableMCP",
+                            parent_message_uuid=assistant_message.id,
+                            oai_tool_call_id=assistant_message.oai_tool_call_id
+                        )
+                        self.history.append(tool_message)
+                        EntityRegistry._logger.info(f"Added MCP tool execution message({tool_message.id}) with tool_call_id: {tool_message.oai_tool_call_id}")
                     
                     elif isinstance(tool, CallableTool):
                         # Handle callable tool execution
