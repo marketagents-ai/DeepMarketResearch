@@ -529,13 +529,46 @@ class CallableTool(Entity):
 class CallableMCPTool(CallableTool):
     """
     A callable tool intended for MCP server execution.
-    
-    This tool includes a flag indicating it should be executed via the MCP server,
-    and holds a reference to the MCP server instance. Its asynchronous execution method
     delegates the call to the MCP server's call_tool interface.
     """
     mcp_mode: bool = Field(default=True, description="Indicates tool execution via MCP server")
-    mcp_server: Optional[Any] = Field(default=None, description="Reference to the MCP server instance")
+    mcp_mechanism: Optional[Any] = Field(default=None, description="Reference to the MCP server mechanism")
+
+    @classmethod
+    def from_callable(
+        cls, 
+        name: str, 
+        description: Optional[str] = None, 
+        input_schema: Dict[str, Any] = None
+    ) -> 'CallableMCPTool':
+        """
+        Creates a new MCP tool with only the parameters available from MCP server.
+        
+        Args:
+            name: Unique identifier for the tool
+            description: Human-readable description
+            input_schema: JSON Schema for the tool's parameters
+        """
+        # Create a dummy function with type hints based on the input_schema
+        def dummy_func(input_data: Dict[str, Any] = None) -> Dict[str, Any]:
+            return {}
+            
+        dummy_func.__name__ = name
+        dummy_func.__doc__ = description
+
+        # Call parent class's from_callable with our dummy function
+        tool = super().from_callable(
+            func=dummy_func,
+            name=name,
+            docstring=description,
+            strict_schema=True
+        )
+
+        # Override the schemas with the ones from MCP server
+        tool.input_schema = input_schema or {"type": "object", "properties": {}}
+        tool.output_schema = {}
+
+        return tool
 
     async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -548,14 +581,14 @@ class CallableMCPTool(CallableTool):
             Dict[str, Any]: Result returned by the MCP server.
         
         Raises:
-            ValueError: If the mcp_server instance is not set.
+            ValueError: If the mcp_mechanism instance is not set.
             Exception: Propagates errors from the MCP server execution.
         """
-        if not self.mcp_server:
-            raise ValueError(f"CallableMCPTool({self.name}): MCP server instance is not set.")
+        if not self.mcp_mechanism:
+            raise ValueError(f"CallableMCPTool({self.name}): MCP mechanism is not set.")
         try:
-            # Delegate execution to the MCP server's async call_tool method.
-            result = await self.mcp_server.call_tool(self.name, arguments=input_data)
+            # Delegate execution to the mechanism's execute_tool method
+            result = await self.mcp_mechanism.execute_tool(self.name, input_data)
             return result
         except Exception as e:
             CallableRegistry._logger.error(f"CallableMCPTool({self.name}): Async execution failed: {e}")
