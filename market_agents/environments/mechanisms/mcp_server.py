@@ -1,7 +1,16 @@
-from typing import Dict, List, Any, Optional, Type, Union
-from pydantic import BaseModel, Field
 from datetime import datetime
+import sys
+import asyncio
+import subprocess
 import logging
+from typing import Dict, Any, List, Union, Optional, Type
+from mcp.client.stdio import stdio_client
+from mcp import StdioServerParameters
+from mcp import ClientSession
+
+import sys
+
+from pydantic import Field, BaseModel
 
 from market_agents.environments.environment import (
     EnvironmentHistory,
@@ -47,14 +56,29 @@ class MCPServerGlobalObservation(GlobalObservation):
     """Global observation containing all agent observations"""
     observations: Dict[str, MCPServerLocalObservation]
 
+class MCPToolAction(LocalAction):
+    """Action for invoking an MCP server tool"""
+    tool_name: str = Field(..., description="Name of the tool to invoke")
+    tool_args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool")
+
+    @classmethod
+    def sample(cls, agent_id: str) -> 'MCPToolAction':
+        """Sample a random tool action (not implemented)"""
+        # This would require knowledge of the available tools and their parameters
+        # For now, just return a placeholder
+        return cls(agent_id=agent_id, tool_name="sample_tool", tool_args={})
+
 class MCPServerMechanism(Mechanism):
     """Mechanism that manages MCP server tool interactions"""
-    mcp_server: Any = Field(default=None, exclude=True)
     current_round: int = Field(default=0, description="Current interaction round")
     max_rounds: int = Field(default=10, description="Maximum interaction rounds")
     tool_history: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="History of tool invocations"
+    )
+    available_tools: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Available tools from the MCP server"
     )
 
     model_config = {
@@ -64,115 +88,180 @@ class MCPServerMechanism(Mechanism):
 
     def __init__(self, **data):
         super().__init__(**data)
-        if not data.get("mcp_server"):
-            raise ValueError("mcp_server must be provided")
-            
-        self.mcp_server = data["mcp_server"]
-        # Extract available tools from the MCP server
-        self.available_tools = self._extract_tools_from_server()
+        
+        # Initialize session-related attributes
+        self._active_session = None
+        self._session = None
+        self._read_write = None
+        self.client_initialized = False
+        
+        # Handle different ways of providing the MCP server
+        if "mcp_server" in data:
+            # Direct server instance provided
+            self.mcp_server = data["mcp_server"]
+            self.server_process = None
+            self.is_external_server = True
+            print(f"Using provided MCP server instance: {type(self.mcp_server)}")
+        elif "server_path" in data:
+            # Path to server script provided - we'll start it ourselves
+            self.server_path = data["server_path"]
+            self.server_process = None
+            self.is_external_server = False
+            # Start the server process
+            self._start_server_process()
+            # Initialize client connection parameters
+            self._initialize_client_connection()
+            # The mcp_server attribute will be set after initializing the client
+            print(f"Started MCP server from path: {self.server_path}")
+        else:
+            raise ValueError("Either mcp_server or server_path must be provided")
+        
+        self.available_tools = {}
     
-    def _extract_tools_from_server(self):
-        """Extract available tools from the MCP server using the official MCP API"""
-        tools = {}
-        
-        print(f"MCP Server type: {type(self.mcp_server)}")
-        
-        # Use the official list_tools method to get tool schemas
-        if hasattr(self.mcp_server, "list_tools") and callable(self.mcp_server.list_tools):
-            try:
-                # Get the current event loop
-                import asyncio
-                loop = asyncio.get_event_loop()
+    def _start_server_process(self):
+        """Start the MCP server as a subprocess"""
+        try:
+            # Check if we should use mcp run or direct python execution
+            if self.server_path.endswith('.py'):
+                # Use direct Python execution
+                self.server_process = subprocess.Popen(
+                    [sys.executable, self.server_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                print(f"Started MCP server process with PID: {self.server_process.pid}")
+            else:
+                # Use mcp run command
+                self.server_process = subprocess.Popen(
+                    ["mcp", "run", self.server_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                print(f"Started MCP server with mcp run, PID: {self.server_process.pid}")
                 
-                # Check if the loop is already running
-                if loop.is_running():
-                    print("Event loop is already running, using direct method access")
-                    
-                    # Try to access tools directly from the MCP server
-                    if hasattr(self.mcp_server, "_tool_manager"):
-                        tool_manager = self.mcp_server._tool_manager
-                        print(f"Found tool manager: {type(tool_manager)}")
-                        
-                        # Try to access tools from the tool manager
-                        if hasattr(tool_manager, "_tools") and tool_manager._tools:
-                            for name, tool_obj in tool_manager._tools.items():
-                                # Print tool object details for debugging
-                                print(f"Tool object for {name}: {type(tool_obj)}")
-                                
-                                # Extract tool info
-                                description = getattr(tool_obj, "description", f"Execute {name}")
+            # Give the server a moment to start up
+            import time
+            time.sleep(2)
+        except Exception as e:
+            print(f"Error starting MCP server: {str(e)}")
+            raise
 
-                                # Get the function directly from the 'fn' attribute
-                                func = None
-                                if hasattr(tool_obj, "fn"):
-                                    func = getattr(tool_obj, "fn")
-                                    print(f"function: {func} for fn")
-                                    if callable(func):
-                                        print(f"Found callable function in attribute 'fn'")
-                                        import inspect
-                                        print(f"Function signature: {inspect.signature(func)}")
-                                        print(f"Function is callable: {callable(func)}")
-                                    else:
-                                        print(f"'fn' attribute exists but is not callable")
-
-                                # Store tool info
-                                tools[name] = {
-                                    "name": name,
-                                    "description": description,
-                                    "func": func
-                                }
-                                
-                                # Print function info for debugging
-                                if func:
-                                    import inspect
-                                    print(f"Function signature: {inspect.signature(func)}")
-                                    print(f"Function is callable: {callable(func)}")
-                                else:
-                                    print(f"No callable function found for tool {name}")
-                                
-                                print(f"Found tool: {name}")
-                    else:
-                        # Create a coroutine for list_tools
-                        coro = self.mcp_server.list_tools()
-                        
-                        # Execute the coroutine
-                        tool_list_response = loop.run_until_complete(coro)
-                        
-                        if hasattr(tool_list_response, 'tools'):
-                            tool_list = tool_list_response.tools
-                            print(f"Found {len(tool_list)} tools using list_tools()")
-                            
-                            # Store tool schemas for each tool
-                            for tool_info in tool_list:
-                                tool_name = tool_info.name
-                                tool_description = tool_info.description
-                                
-                                # Store the tool info in our tools dictionary
-                                tools[tool_name] = {
-                                    "name": tool_name,
-                                    "description": tool_description
-                                }
-                                print(f"Found tool: {tool_name}")
-                        else:
-                            print("Tool list response doesn't have 'tools' attribute")
-            except Exception as e:
-                print(f"Error accessing tools through list_tools: {str(e)}")
-        else:
-            print("MCP Server doesn't have list_tools method")
+    def _initialize_client_connection(self):
+        """Initialize client connection to the MCP server"""
         
-        print(f"Total tools found: {len(tools)}")
-        if tools:
-            print(f"Tool names: {list(tools.keys())}")
-        else:
-            print("No tools found in MCP server")
-        
-        return tools
+        try:
+            # Create server parameters for the client
+            self.server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[self.server_path],
+                env=None
+            )
+            print(f"Initialized client connection parameters for server: {self.server_path}")
+            
+            
+            # Set the mcp_server attribute to the server parameters
+            # This will be used to create sessions when needed
+            self.mcp_server = self.server_params
+            print("Client connection parameters initialized")
+            
+        except Exception as e:
+            print(f"Error initializing client connection: {str(e)}")
+            raise
     
-    def step(
+    async def _get_or_create_session(self):
+        """Get an existing session or create a new one if needed"""
+        
+        # Check if we already have an active session
+        if hasattr(self, '_active_session') and self._active_session:
+            return self._active_session
+        
+        # Create a new session
+        self._read_write = await stdio_client(self.server_params).__aenter__()
+        self._session = ClientSession(*self._read_write)
+        self._active_session = await self._session.__aenter__()
+        
+        # Initialize the session
+        await self._active_session.initialize()
+        
+        return self._active_session
+
+    async def _close_session(self):
+        """Close the active session if one exists"""
+        if hasattr(self, '_active_session') and self._active_session:
+            try:
+                await self._session.__aexit__(None, None, None)
+                await self._read_write[0].__aexit__(None, None, None)
+                self._active_session = None
+                self._session = None
+                self._read_write = None
+            except Exception as e:
+                print(f"Error closing session: {str(e)}")
+
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Execute a tool using an MCP client session"""
+        try:
+            # Get or create a session
+            session = await self._get_or_create_session()
+            
+            # Call the tool
+            result = await session.call_tool(tool_name, arguments=arguments)
+            
+            # Record the tool execution in history
+            self.tool_history.append({
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": result,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            return result
+        except Exception as e:
+            print(f"Error executing tool {tool_name}: {str(e)}")
+            # Close the session on error to ensure a fresh start next time
+            await self._close_session()
+            raise
+
+    async def initialize(self):
+        """Initialize the mechanism by extracting available tools"""
+        try:
+            async with stdio_client(self.mcp_server) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    print("Connected to MCP Server")
+                    
+                    tools_result = await session.list_tools()
+                    
+                    if hasattr(tools_result, 'tools'):
+                        self.available_tools = {}
+                        for tool_info in tools_result.tools:
+                            self.available_tools[tool_info.name] = {
+                                "name": tool_info.name,
+                                "description": tool_info.description,
+                                "input_schema": tool_info.inputSchema
+                            }
+                        print(f"Found {len(self.available_tools)} tools")
+                    else:
+                        print("No tools attribute found in result")
+                        self.available_tools = {}
+                        
+        except Exception as e:
+            print(f"Error initializing mechanism: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.available_tools = {}
+            
+    async def step(
         self,
         action: Union[GlobalAction, str]
     ) -> Union[LocalEnvironmentStep, EnvironmentStep]:
-        """Process agent actions and execute MCP server tools"""
+        """
+        Process agent actions and track the current round.
+        
+        Note: This method doesn't execute tools directly - tools are executed
+        by the CallableMCPTool instances when used by agents.
+        """
         self.current_round += 1
         done = (self.current_round >= self.max_rounds)
 
@@ -186,37 +275,6 @@ class MCPServerMechanism(Mechanism):
                     "status": "success"
                 }
                 
-                # Execute the tool if it's a valid tool request
-                if hasattr(agent_action, 'tool_name') and agent_action.tool_name in self.available_tools:
-                    try:
-                        tool_func = self.available_tools[agent_action.tool_name]
-                        tool_args = agent_action.tool_args if hasattr(agent_action, 'tool_args') else {}
-                        
-                        # Execute the tool
-                        result = tool_func(**tool_args)
-                        
-                        # Record the tool execution
-                        tool_result = MCPServerResult(
-                            tool_name=agent_action.tool_name,
-                            result=result
-                        )
-                        
-                        # Add to history
-                        self.tool_history.append({
-                            "agent_id": agent_id,
-                            "tool_name": agent_action.tool_name,
-                            "tool_args": tool_args,
-                            "result": result,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        
-                        # Create observation with tool result
-                        obs_data["tool_result"] = tool_result.model_dump()
-                        
-                    except Exception as e:
-                        obs_data["status"] = "error"
-                        obs_data["error"] = str(e)
-                
                 # Create the local observation
                 observations[agent_id] = MCPServerLocalObservation(
                     agent_id=agent_id,
@@ -229,9 +287,9 @@ class MCPServerMechanism(Mechanism):
             
             # Return environment step
             return EnvironmentStep(
+                global_action=action,
                 global_observation=global_obs,
-                done=done,
-                info={"round": self.current_round, "max_rounds": self.max_rounds}
+                done=done
             )
         
         elif isinstance(action, LocalAction):
@@ -243,37 +301,6 @@ class MCPServerMechanism(Mechanism):
                 "status": "success"
             }
             
-            # Execute the tool if it's a valid tool request
-            if hasattr(action, 'tool_name') and action.tool_name in self.available_tools:
-                try:
-                    tool_func = self.available_tools[action.tool_name]
-                    tool_args = action.tool_args if hasattr(action, 'tool_args') else {}
-                    
-                    # Execute the tool
-                    result = tool_func(**tool_args)
-                    
-                    # Record the tool execution
-                    tool_result = MCPServerResult(
-                        tool_name=action.tool_name,
-                        result=result
-                    )
-                    
-                    # Add to history
-                    self.tool_history.append({
-                        "agent_id": agent_id,
-                        "tool_name": action.tool_name,
-                        "tool_args": tool_args,
-                        "result": result,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    
-                    # Create observation with tool result
-                    obs_data["tool_result"] = tool_result.model_dump()
-                    
-                except Exception as e:
-                    obs_data["status"] = "error"
-                    obs_data["error"] = str(e)
-            
             # Create the local observation
             local_obs = MCPServerLocalObservation(
                 agent_id=agent_id,
@@ -284,13 +311,20 @@ class MCPServerMechanism(Mechanism):
             # Return local environment step
             return LocalEnvironmentStep(
                 observation=local_obs,
-                done=done,
-                info={"round": self.current_round, "max_rounds": self.max_rounds}
+                done=done
             )
         
         else:
-            raise ValueError(f"Unsupported action type: {type(action)}")
-    
+            # Handle string actions or other types
+            return LocalEnvironmentStep(
+                observation=MCPServerLocalObservation(
+                    agent_id="system",
+                    observation={"action": str(action), "round": self.current_round},
+                    status="success"
+                ),
+                done=done
+            )
+
     def get_global_state(self) -> Dict[str, Any]:
         """Get the current global state of the mechanism"""
         return {
@@ -299,18 +333,28 @@ class MCPServerMechanism(Mechanism):
             "tool_history": self.tool_history,
             "available_tools": list(self.available_tools.keys())
         }
+    
+    async def cleanup(self):
+        """Clean up resources when the mechanism is no longer needed"""
+        await self._close_session()
+        
+        if hasattr(self, 'server_process') and self.server_process:
+            try:
+                self.server_process.terminate()
+                print(f"Terminated MCP server process with PID: {self.server_process.pid}")
+            except Exception as e:
+                print(f"Error terminating server process: {str(e)}")
 
-class MCPToolAction(LocalAction):
-    """Action for invoking an MCP server tool"""
-    tool_name: str = Field(..., description="Name of the tool to invoke")
-    tool_args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool")
-
-    @classmethod
-    def sample(cls, agent_id: str) -> 'MCPToolAction':
-        """Sample a random tool action (not implemented)"""
-        # This would require knowledge of the available tools and their parameters
-        # For now, just return a placeholder
-        return cls(agent_id=agent_id, tool_name="sample_tool", tool_args={})
+    def __del__(self):
+        """Clean up resources when the mechanism is destroyed"""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self.cleanup())
+            else:
+                loop.run_until_complete(self.cleanup())
+        except Exception as e:
+            print(f"Error in __del__: {str(e)}")
 
 class MCPServerActionSpace(ActionSpace):
     """Action space that handles MCP server tool invocations"""
@@ -336,13 +380,12 @@ class MCPServerActionSpace(ActionSpace):
                 from minference.lite.models import CallableMCPTool
                 
                 # Check if we have the function object
-                if "func" in tool_info and tool_info["func"] is not None:
+                if "input_schema" in tool_info and tool_info["input_schema"] is not None:
                     # Create the tool from the function
                     mcp_tool = CallableMCPTool.from_callable(
-                        func=tool_info["func"],
                         name=tool_name,
-                        docstring=tool_info.get("description", ""),
-                        strict_schema=False
+                        description=tool_info.get("description"),
+                        input_schema=tool_info.get("input_schema")
                     )
                 else:
                     # Skip this tool since we don't have a callable function
@@ -350,7 +393,7 @@ class MCPServerActionSpace(ActionSpace):
                     continue
                 
                 # Set the MCP server
-                mcp_tool.mcp_server = mechanism.mcp_server
+                mcp_tool.mcp_mechanism = mechanism
                 
                 self.allowed_actions.append(mcp_tool)
                 print(f"Successfully added tool: {tool_name}")
@@ -400,17 +443,29 @@ class MCPServerEnvironment(MultiAgentEnvironment):
         }
         super().__init__(**model_data)
         
-        self.action_space = MCPServerActionSpace(
-            mechanism=self.mechanism
-        )
+        self.action_space = None
         
         self.internal_state = {}
+
+    async def initialize(self):
+        """Initialize the environment by setting up mechanism and action space"""
+        # Initialize mechanism first
+        await self.mechanism.initialize()
+        
+        # Create action space with available tools
+        print(f"Creating action space with {len(self.mechanism.available_tools)} available tools")
+        self.action_space = MCPServerActionSpace(mechanism=self.mechanism)
     
     def get_global_state(self):
         """Get current global state combining mechanism and environment state"""
         state = self.mechanism.get_global_state()
         state.update(self.internal_state)
         return state
+    
+    async def step(self, action: Union[GlobalAction, LocalAction, str]) -> Union[EnvironmentStep, LocalEnvironmentStep]:
+        """Process an action and return the resulting step"""
+        # Delegate to the mechanism's step method
+        return await self.mechanism.step(action)
     
     def reset(self):
         """Reset environment state"""
@@ -424,3 +479,7 @@ class MCPServerEnvironment(MultiAgentEnvironment):
         
         # Return global observation
         return MCPServerGlobalObservation(observations=observations)
+    
+    async def cleanup(self):
+        """Clean up resources when the environment is no longer needed"""
+        await self.mechanism.cleanup()
