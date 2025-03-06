@@ -57,21 +57,31 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
             tool_mode=self.orchestrator_config.tool_mode
         )
         
-        # Import and initialize the MCP server
-        try:
-            mcp_module = importlib.import_module(self.config.mcp_server_module)
-            mcp_server = getattr(mcp_module, self.config.mcp_server_class)
-            self.logger.info(f"Successfully loaded MCP server from {self.config.mcp_server_module}")
-        except (ImportError, AttributeError) as e:
-            self.logger.error(f"Failed to load MCP server: {e}")
-            raise ValueError(f"Could not load MCP server from {self.config.mcp_server_module}: {e}")
+        # Determine the server path from the module path
+        server_module_path = self.config.mcp_server_module.replace('.', '/')
+        server_path = f"{server_module_path}.py"
         
-        # Create the MCP server mechanism and environment
+        # Check if the file exists
+        import os
+        if not os.path.exists(server_path):
+            # Try to find the actual path
+            import importlib.util
+            import sys
+            
+            spec = importlib.util.find_spec(self.config.mcp_server_module)
+            if spec and spec.origin:
+                server_path = spec.origin
+                self.logger.info(f"Found server script at: {server_path}")
+            else:
+                self.logger.error(f"Could not find server script for module: {self.config.mcp_server_module}")
+                raise ValueError(f"Server script not found for {self.config.mcp_server_module}")
+        
+        # Create the MCP server mechanism with the server path
         mechanism = MCPServerMechanism(
-            mcp_server=mcp_server,
+            server_path=server_path,
             max_rounds=self.config.sub_rounds
         )
-        
+                
         self.environment = MCPServerEnvironment(
             name=self.config.name,
             mechanism=mechanism
@@ -88,6 +98,7 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
     async def setup_environment(self):
         """Setup or reset the MCP server environment."""
         self.logger.info("Setting up the MCP Server Environment...")
+        await self.environment.initialize()
         self.environment.reset()
         self.logger.info("MCP Server Environment setup complete.")
     
