@@ -90,7 +90,7 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
         # Register the environment with each agent
         for agent in self.agents:
             agent.environments[self.config.name] = self.environment
-            agent.task = f"Interact with the MCP server: {self.config.initial_prompt}"
+            agent.task = f"Interact with the MCP server: {self.config.task_prompt}"
             agent._refresh_prompts()
         
         self.logger.info(f"Initialized MCPOrchestrator for environment: {self.config.name}")
@@ -113,19 +113,19 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
     async def run_mcp_round(self, round_num: int):
         """Orchestrates a single main round with multiple sub-rounds of MCP server interaction."""
         self.logger.info(f"=== Running MCP Server Round {round_num} ===")
-        
         # Run each sub-round
         for sub_round in range(1, self.config.sub_rounds + 1):
             self.logger.info(f"=== Starting Sub-round {sub_round}/{self.config.sub_rounds} of Round {round_num} ===")
+
             try:
                 # Run perception phase
-                #perceptions = await self._run_perception_phase(round_num, sub_round)
+                perceptions = await self._run_perception_phase(round_num, sub_round)
                 
                 # Run action phase
                 step_result = await self._run_action_phase(round_num, sub_round)
                 
                 # Run reflection phase
-                #reflections = await self._run_reflection_phase(round_num, sub_round)
+                reflections = await self._run_reflection_phase(round_num, sub_round)
                 
                 # Process and store results
                 await self.process_round_results(round_num, step_result, sub_round)
@@ -158,22 +158,55 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
         """Handles the action phase of the cognitive cycle."""
         self.logger.info(f"Round {round_num}.{sub_round}: Executing agent actions with MCP server...")
         
-        actions = await self.cognitive_processor.run_parallel_action(
-            self.agents,
-            self.config.name
-        )
-        
-        agent_results = await self._process_agent_actions(actions)
-        self.logger.info(f"Processed action results: {agent_results}")
-        
-        global_actions = await self._create_global_actions(actions)
-        
-        step_result = self.environment.step(GlobalAction(actions=global_actions))
-        
-        if step_result and step_result.global_observation:
-            await self._update_agent_observations(step_result)
-        
-        return step_result
+        try:
+            # Get agent actions
+            actions = await self.cognitive_processor.run_parallel_action(
+                self.agents,
+                self.config.name
+            )
+            
+            # Process actions into global actions
+            agent_results = await self._process_agent_actions(actions)
+            self.logger.info(f"Processed action results: {agent_results}")
+            
+            # Create global action object
+            global_action = GlobalAction(actions=agent_results)
+            
+            # Execute step and await the result
+            step_result = await self.environment.step(global_action)
+            
+            # Update agent observations if we have results
+            if step_result:
+                if isinstance(step_result, EnvironmentStep) and step_result.global_observation:
+                    await self._update_agent_observations(step_result)
+                elif isinstance(step_result, LocalEnvironmentStep) and step_result.observation:
+                    # Handle local step result
+                    for agent in self.agents:
+                        if step_result.observation.agent_id == agent.id:
+                            agent.last_observation = step_result.observation
+            
+            return step_result
+            
+        except Exception as e:
+            self.logger.error(f"Error in action phase: {str(e)}")
+            raise
+
+    async def _update_agent_observations(self, step_result):
+        """Update agent observations based on step results."""
+        try:
+            if isinstance(step_result, LocalEnvironmentStep):
+                # Handle local step result
+                for agent in self.agents:
+                    if step_result.observation.agent_id == agent.id:
+                        agent.last_observation = step_result.observation
+                        break
+            elif isinstance(step_result, EnvironmentStep) and step_result.global_observation:
+                # Handle global step result
+                for agent in self.agents:
+                    if agent.id in step_result.global_observation.observations:
+                        agent.last_observation = step_result.global_observation.observations[agent.id]
+        except Exception as e:
+            self.logger.error(f"Error updating agent observations: {str(e)}")
     
     async def _process_agent_actions(self, actions):
         """Process individual agent actions and create global actions."""
@@ -292,24 +325,6 @@ class MCPOrchestrator(BaseEnvironmentOrchestrator):
                 )
         
         return global_actions
-    
-    async def _update_agent_observations(self, step_result):
-        """Update agent observations based on step results."""
-        if not step_result:
-            return
-        
-        for agent in self.agents:
-            try:
-                if isinstance(step_result, LocalEnvironmentStep):
-                    if step_result.observation.agent_id == agent.id:
-                        agent.last_observation = step_result.observation
-                elif isinstance(step_result, EnvironmentStep) and step_result.global_observation:
-                    if agent.id in step_result.global_observation.observations:
-                        agent.last_observation = step_result.global_observation.observations[agent.id]
-            
-            except Exception as e:
-                self.logger.error(f"Error updating observation for agent {agent.id}: {str(e)}")
-                agent.last_observation = None
     
     async def _run_reflection_phase(self, round_num: int, sub_round: int):
         """Run parallel reflection for all agents."""

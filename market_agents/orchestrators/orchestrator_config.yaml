@@ -102,7 +102,7 @@ environment_configs:
     api_url: "local://mcp_server"
     max_rounds: 3
     sub_rounds: 2
-    initial_prompt: "Analyze the current market conditions for NVIDIA stocks. What are their current prices, recent performance, and key financial metrics?"
+    task_prompt: "Analyze the current market conditions for NVIDIA stocks. What are their current prices, recent performance, and key financial metrics?"
 
 protocol: "acl_message"
 database_config:

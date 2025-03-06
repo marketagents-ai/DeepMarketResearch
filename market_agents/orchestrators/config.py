@@ -112,9 +112,9 @@ class MCPServerConfig(EnvironmentConfig):
         default=2, 
         description="Number of sub-rounds per main round"
     )
-    initial_prompt: str = Field(
+    task_prompt: str = Field(
         default="", 
-        description="Initial prompt for the MCP server interaction"
+        description="Initial task prompt for the MCP server interaction"
     )
     api_url: str = Field(
         default="local://mcp_server",

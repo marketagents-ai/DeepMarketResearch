@@ -89,6 +89,9 @@ class MCPServerMechanism(Mechanism):
     def __init__(self, **data):
         super().__init__(**data)
         
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
         # Initialize session-related attributes
         self._active_session = None
         self._session = None
@@ -101,7 +104,7 @@ class MCPServerMechanism(Mechanism):
             self.mcp_server = data["mcp_server"]
             self.server_process = None
             self.is_external_server = True
-            print(f"Using provided MCP server instance: {type(self.mcp_server)}")
+            self.logger.info(f"Using provided MCP server instance: {type(self.mcp_server)}")
         elif "server_path" in data:
             # Path to server script provided - we'll start it ourselves
             self.server_path = data["server_path"]
@@ -111,8 +114,7 @@ class MCPServerMechanism(Mechanism):
             self._start_server_process()
             # Initialize client connection parameters
             self._initialize_client_connection()
-            # The mcp_server attribute will be set after initializing the client
-            print(f"Started MCP server from path: {self.server_path}")
+            self.logger.info(f"Started MCP server from path: {self.server_path}")
         else:
             raise ValueError("Either mcp_server or server_path must be provided")
         
@@ -169,59 +171,60 @@ class MCPServerMechanism(Mechanism):
         except Exception as e:
             print(f"Error initializing client connection: {str(e)}")
             raise
-    
-    async def _get_or_create_session(self):
-        """Get an existing session or create a new one if needed"""
-        
-        # Check if we already have an active session
-        if hasattr(self, '_active_session') and self._active_session:
-            return self._active_session
-        
-        # Create a new session
-        self._read_write = await stdio_client(self.server_params).__aenter__()
-        self._session = ClientSession(*self._read_write)
-        self._active_session = await self._session.__aenter__()
-        
-        # Initialize the session
-        await self._active_session.initialize()
-        
-        return self._active_session
-
-    async def _close_session(self):
-        """Close the active session if one exists"""
-        if hasattr(self, '_active_session') and self._active_session:
-            try:
-                await self._session.__aexit__(None, None, None)
-                await self._read_write[0].__aexit__(None, None, None)
-                self._active_session = None
-                self._session = None
-                self._read_write = None
-            except Exception as e:
-                print(f"Error closing session: {str(e)}")
 
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """Execute a tool using an MCP client session"""
-        try:
-            # Get or create a session
-            session = await self._get_or_create_session()
+        """Execute a tool using a fresh MCP client session"""
+        max_retries = 3
+        retry_count = 0
+        last_error = None
+        
+        while retry_count < max_retries:
+            try:
+                # Create a fresh session for each tool execution
+                async with asyncio.timeout(30):  # 30 second timeout
+                    async with stdio_client(self.server_params) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            result = await session.call_tool(tool_name, arguments=arguments)
+                            
+                            # Convert CallToolResult to dict
+                            if hasattr(result, 'model_dump'):
+                                result = result.model_dump()
+                            elif hasattr(result, 'dict'):
+                                result = result.dict()
+                            elif hasattr(result, '__dict__'):
+                                result = result.__dict__
+                            
+                            print(f"tool result:\n{result}")
+                            # Record successful execution
+                            self.tool_history.append({
+                                "tool_name": tool_name,
+                                "arguments": arguments,
+                                "result": result,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            return result
+                    
+            except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+                self.logger.error(f"Tool execution timed out or was cancelled: {str(e)}")
+                last_error = e
+                # Don't retry on explicit cancellation
+                if isinstance(e, asyncio.CancelledError):
+                    break
+            except Exception as e:
+                self.logger.error(f"Error executing tool {tool_name}: {str(e)}")
+                last_error = e
             
-            # Call the tool
-            result = await session.call_tool(tool_name, arguments=arguments)
-            
-            # Record the tool execution in history
-            self.tool_history.append({
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "result": result,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            return result
-        except Exception as e:
-            print(f"Error executing tool {tool_name}: {str(e)}")
-            # Close the session on error to ensure a fresh start next time
-            await self._close_session()
-            raise
+            # Increment retry counter and wait before retrying
+            retry_count += 1
+            if retry_count < max_retries:
+                await asyncio.sleep(1)  # Wait before retrying
+        
+        # If we've exhausted retries or got cancelled, raise the last error
+        if isinstance(last_error, asyncio.CancelledError):
+            raise last_error
+        raise last_error or Exception(f"Failed to execute tool {tool_name} after {max_retries} retries")
 
     async def initialize(self):
         """Initialize the mechanism by extracting available tools"""
@@ -258,9 +261,6 @@ class MCPServerMechanism(Mechanism):
     ) -> Union[LocalEnvironmentStep, EnvironmentStep]:
         """
         Process agent actions and track the current round.
-        
-        Note: This method doesn't execute tools directly - tools are executed
-        by the CallableMCPTool instances when used by agents.
         """
         self.current_round += 1
         done = (self.current_round >= self.max_rounds)
@@ -285,11 +285,17 @@ class MCPServerMechanism(Mechanism):
             # Create global observation
             global_obs = MCPServerGlobalObservation(observations=observations)
             
-            # Return environment step
+            # Return environment step with required info field
             return EnvironmentStep(
                 global_action=action,
                 global_observation=global_obs,
-                done=done
+                done=done,
+                info={  # Add the required info field
+                    "round": self.current_round,
+                    "max_rounds": self.max_rounds,
+                    "tool_history": self.tool_history,
+                    "available_tools": list(self.available_tools.keys())
+                }
             )
         
         elif isinstance(action, LocalAction):
@@ -308,10 +314,16 @@ class MCPServerMechanism(Mechanism):
                 status=obs_data["status"]
             )
             
-            # Return local environment step
+            # Return local environment step with required info field
             return LocalEnvironmentStep(
                 observation=local_obs,
-                done=done
+                done=done,
+                info={  # Add the required info field
+                    "round": self.current_round,
+                    "max_rounds": self.max_rounds,
+                    "tool_history": self.tool_history,
+                    "available_tools": list(self.available_tools.keys())
+                }
             )
         
         else:
@@ -322,9 +334,14 @@ class MCPServerMechanism(Mechanism):
                     observation={"action": str(action), "round": self.current_round},
                     status="success"
                 ),
-                done=done
+                done=done,
+                info={  # Add the required info field
+                    "round": self.current_round,
+                    "max_rounds": self.max_rounds,
+                    "tool_history": self.tool_history,
+                    "available_tools": list(self.available_tools.keys())
+                }
             )
-
     def get_global_state(self) -> Dict[str, Any]:
         """Get the current global state of the mechanism"""
         return {
@@ -333,28 +350,6 @@ class MCPServerMechanism(Mechanism):
             "tool_history": self.tool_history,
             "available_tools": list(self.available_tools.keys())
         }
-    
-    async def cleanup(self):
-        """Clean up resources when the mechanism is no longer needed"""
-        await self._close_session()
-        
-        if hasattr(self, 'server_process') and self.server_process:
-            try:
-                self.server_process.terminate()
-                print(f"Terminated MCP server process with PID: {self.server_process.pid}")
-            except Exception as e:
-                print(f"Error terminating server process: {str(e)}")
-
-    def __del__(self):
-        """Clean up resources when the mechanism is destroyed"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self.cleanup())
-            else:
-                loop.run_until_complete(self.cleanup())
-        except Exception as e:
-            print(f"Error in __del__: {str(e)}")
 
 class MCPServerActionSpace(ActionSpace):
     """Action space that handles MCP server tool invocations"""
@@ -479,7 +474,3 @@ class MCPServerEnvironment(MultiAgentEnvironment):
         
         # Return global observation
         return MCPServerGlobalObservation(observations=observations)
-    
-    async def cleanup(self):
-        """Clean up resources when the environment is no longer needed"""
-        await self.mechanism.cleanup()

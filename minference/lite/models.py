@@ -829,7 +829,7 @@ class LLMConfig(Entity):
         return self
 
 
-ToolType = Literal["Callable", "Structured"]
+ToolType = Literal["Callable", "CallableMCP", "Structured"]
 
 class ChatMessage(Entity):
     """A chat message entity using chatml format."""
